@@ -20,10 +20,6 @@
 #include "file/file.h"
 #include "../savestate.h"
 #include "pakinfo_internal.h"
-
-#include <unistd.h>
-#include <fcntl.h>
-#include <shake.h>
 #include <cstring>
 #include <fstream>
 
@@ -403,23 +399,13 @@ private:
 
 class Mbc5 : public DefaultMbc {
 public:
-	explicit Mbc5(MemPtrs &memptrs, bool rumble)
+	explicit Mbc5(MemPtrs &memptrs)
 	: memptrs_(memptrs)
 	, rombank_(1)
 	, rambank_(0)
 	, enableRam_(false)
-  , enableRumble_(rumble)
 	{
-    preRumbleVal_ = 0xff;
-    vibrator_ = NULL;
-    if(enableRumble_){
-      shake_init();
-    }
 	}
-
-  ~Mbc5() {
-    shake_deinit();
-  }
 
 	virtual void romWrite(unsigned const p, unsigned const data) {
 		switch (p >> 13 & 3) {
@@ -440,23 +426,6 @@ public:
 		case 3:
 			break;
 		}
-
-    switch (p >> 12 & 0x7) {
-    case 4:
-    case 5:
-      if((enableRumble_ == true) && ((p >> 12 & 0x7) == 4)){
-        if((data & 8) != preRumbleVal_){
-          preRumbleVal_ = data & 8;
-          if(preRumbleVal_) {
-            shake_it(2);
-          }
-        }
-      }
-      else{
-        rambank_ = data & 0x0f;
-      }
-      break;
-    }
 	}
 
 	virtual void saveState(SaveState::Mem &ss) const {
@@ -473,81 +442,11 @@ public:
 		setRombank();
 	}
 
-  void enableRumble(bool en) {
-    enableRumble_ = en;
-  }
-
-  void shake_init(void)
-  {
-    int id;
-
-    vibrator_ = NULL;
-    Shake_Effect effect;
-    Shake_Init();
-    if(Shake_NumOfDevices() > 0){
-      vibrator_ = Shake_Open(0);
-      memset(&effect, 0, sizeof(effect));
-      Shake_SimpleRumble(&effect, 50,  0, 0.5); 
-      id = Shake_UploadEffect(vibrator_, &effect);
-      Shake_Play(vibrator_, id);
-      usleep(300000);
-      Shake_EraseEffect(vibrator_, id);
-    }
-  }
-
-  void shake_it(int level)
-  {
-    int var;
-    static int id=-1;
-    Shake_Effect effect;
-
-    if(id != -1){
-      Shake_EraseEffect(vibrator_, id);
-    }
-
-    var = (level % 3) + 1;
-    memset(&effect, 0, sizeof(effect));
-    if(vibrator_){
-      switch(level){
-      case 0:
-      case 1:
-      case 2:
-        Shake_SimpleRumble(&effect, 10,  0, 0.1 * var); 
-        id = Shake_UploadEffect(vibrator_, &effect);
-        Shake_Play(vibrator_, id);
-        break;
-      case 3:
-      case 4:
-      case 5:
-        Shake_SimpleRumble(&effect, 100,  0, 0.1 * var); 
-        id = Shake_UploadEffect(vibrator_, &effect);
-        Shake_Play(vibrator_, id);
-        usleep(150000);
-        Shake_Play(vibrator_, id);
-        break;
-      default:
-        id = -1;
-      }
-    }
-  }
-
-  void shake_deinit(void)
-  {
-    if(vibrator_) {
-      Shake_Close(vibrator_);
-      Shake_Quit();
-      vibrator_ = NULL;
-    }
-  }
-
 private:
 	MemPtrs &memptrs_;
 	unsigned short rombank_;
 	unsigned char rambank_;
 	bool enableRam_;
-  bool enableRumble_;
-  unsigned char preRumbleVal_;
-  Shake_Device *vibrator_;
 
 	void setRambank() const {
 		memptrs_.setRambank(enableRam_ ? MemPtrs::read_en | MemPtrs::write_en : 0,
@@ -639,7 +538,6 @@ LoadRes Cartridge::loadROM(std::string const &romfile,
                            bool const multicartCompat,
                            int const preferCGB)
 {
-  bool rumble=false;
 	scoped_ptr<File> const rom(newFileInstance(romfile));
 	if (rom->fail())
 		return LOADRES_IO_ERROR;
@@ -684,12 +582,7 @@ LoadRes Cartridge::loadROM(std::string const &romfile,
 		case 0x1B:
 		case 0x1C:
 		case 0x1D:
-		case 0x1E: 
-      if((header[0x0147] >= 0x1c) && (header[0x0147] <= 0x1e)){
-        rumble = true;
-      }
-      type = type_mbc5; 
-      break;
+		case 0x1E: type = type_mbc5; break;
 		case 0x20: return LOADRES_UNSUPPORTED_MBC_MBC6;
 		case 0x22: return LOADRES_UNSUPPORTED_MBC_MBC7;
 		case 0xFC: return LOADRES_UNSUPPORTED_MBC_POCKET_CAMERA;
@@ -774,7 +667,7 @@ LoadRes Cartridge::loadROM(std::string const &romfile,
 	case type_mbc3:
 		mbc_.reset(new Mbc3(memptrs_, hasRtc(memptrs_.romdata()[0x147]) ? &rtc_ : 0));
 		break;
-	case type_mbc5: mbc_.reset(new Mbc5(memptrs_, rumble)); break;
+	case type_mbc5: mbc_.reset(new Mbc5(memptrs_)); break;
 	case type_huc1: mbc_.reset(new HuC1(memptrs_)); break;
 	}
 

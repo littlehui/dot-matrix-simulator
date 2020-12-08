@@ -10,6 +10,19 @@
 #   define prefetch(x, y)
 #endif
 
+uint16_t hexcolor_to_rgb565(const uint32_t color)
+{
+    uint8_t colorr = ((color >> 16) & 0xFF);
+    uint8_t colorg = ((color >> 8) & 0xFF);
+    uint8_t colorb = ((color) & 0xFF);
+
+    uint16_t r = ((colorr >> 3) & 0x1f) << 11;
+    uint16_t g = ((colorg >> 2) & 0x3f) << 5;
+    uint16_t b = (colorb >> 3) & 0x1f;
+
+    return (uint16_t) (r | g | b);
+}
+
 /* Ayla's fullscreen upscaler */
 /* Upscale from 160x144 to 320x240 */
 void fullscreen_upscale(uint32_t *to, uint32_t *from)
@@ -855,20 +868,176 @@ void scale166x_pseudobilinear(uint32_t* dst, uint32_t* src)
     }
 }
 
-#ifdef VGA_SCREEN
+#ifdef OGA_SCREEN
 
-uint16_t hexcolor_to_rgb565(const uint32_t color)
+/* Upscales a 160x144 image to 320x288 using a grid-looking upscaler algorithm.
+ *
+ * Input:
+ *   src: A packed 160x144 pixel image. The pixel format of this image is RGB 565.
+ *   gridcolor: An hexadecimal color. The format of this color is 0xRRGGBB.
+ * Output:
+ *   dst: A packed 320x288 pixel image. The pixel format of this image is RGB 565.
+ */
+
+void scale2x_dotmatrix(uint32_t* dst, uint32_t* src, const uint32_t gridcolor)
 {
-    uint8_t colorr = ((color >> 16) & 0xFF);
-    uint8_t colorg = ((color >> 8) & 0xFF);
-    uint8_t colorb = ((color) & 0xFF);
+    uint16_t* Src16 = (uint16_t*) src;
+    uint16_t* Dst16 = (uint16_t*) dst;
+    uint16_t gcolor = hexcolor_to_rgb565(gridcolor);
 
-    uint16_t r = ((colorr >> 3) & 0x1f) << 11;
-    uint16_t g = ((colorg >> 2) & 0x3f) << 5;
-    uint16_t b = (colorb >> 3) & 0x1f;
+    // There are 160 pixels horizontally, and 144 vertically.
+    // Each pixel becomes 2x2 with an added grid pattern.
 
-    return (uint16_t) (r | g | b);
+    uint32_t BlockX, BlockY;
+    uint16_t* BlockSrc;
+    uint16_t* BlockDst;
+    for (BlockY = 0; BlockY < 144; BlockY++)
+    {
+        BlockSrc = Src16 + BlockY * 160 * 1;
+        BlockDst = Dst16 + BlockY * 480 * 2;
+        for (BlockX = 0; BlockX < 160; BlockX++)
+        {
+            // Before:          After:
+            // (a)              (2)(1)
+            //                  (3)(2)
+
+            uint16_t  _1 = *(BlockSrc);
+            uint16_t  _2 = Weight2_1( _1, gcolor);
+            uint16_t  _3 = Weight1_1( _1, gcolor);
+
+            // -- Row 1 --
+            *(BlockDst               ) = _2;
+            *(BlockDst            + 1) = _1;
+
+            // -- Row 2 --
+            *(BlockDst + 480 *  1    ) = _3;
+            *(BlockDst + 480 *  1 + 1) = _2;
+
+            BlockSrc += 1;
+            BlockDst += 2;
+        }
+    }
 }
+
+/* Upscales a 160x144 image to 320x288 using a CRT-looking upscaler algorithm.
+ *
+ * Input:
+ *   src: A packed 160x144 pixel image. The pixel format of this image is RGB 565.
+ *   gridcolor: An hexadecimal color. The format of this color is 0xRRGGBB.
+ * Output:
+ *   dst: A packed 320x288 pixel image. The pixel format of this image is RGB 565.
+ */
+
+void scale2x_crt(uint32_t* dst, uint32_t* src)
+{
+    uint16_t* Src16 = (uint16_t*) src;
+    uint16_t* Dst16 = (uint16_t*) dst;
+    uint16_t gcolor = hexcolor_to_rgb565(0x000000);
+
+    // There are 160 pixels horizontally, and 144 vertically.
+    // Each pixel becomes 2x2 with an added scanline pattern.
+
+    uint32_t BlockX, BlockY;
+    uint16_t* BlockSrc;
+    uint16_t* BlockDst;
+    for (BlockY = 0; BlockY < 144; BlockY++)
+    {
+        BlockSrc = Src16 + BlockY * 160 * 1;
+        BlockDst = Dst16 + BlockY * 480 * 2;
+        for (BlockX = 0; BlockX < 160; BlockX++)
+        {
+            // Before:          After:
+            // (a)              (1)(1)
+            //                  (2)(2)
+
+            uint16_t  _1 = *(BlockSrc);
+            uint16_t  _2 = Weight2_1( _1, gcolor);
+
+            // -- Row 1 --
+            *(BlockDst               ) = _1;
+            *(BlockDst            + 1) = _1;
+
+            // -- Row 2 --
+            *(BlockDst + 480 *  1    ) = _2;
+            *(BlockDst + 480 *  1 + 1) = _2;
+
+            BlockSrc += 1;
+            BlockDst += 2;
+        }
+    }
+}
+
+void scaleborder2x(uint32_t* dst, uint32_t* src)
+{
+    uint16_t* Src16 = (uint16_t*) src;
+    uint16_t* Dst16 = (uint16_t*) dst;
+
+    uint32_t BlockX, BlockY;
+    uint16_t* BlockSrc;
+    uint16_t* BlockDst;
+    for (BlockY = 0; BlockY < 160; BlockY++)
+    {
+        BlockSrc = Src16 + BlockY * 240 * 1;
+        BlockDst = Dst16 + BlockY * 480 * 2;
+        for (BlockX = 0; BlockX < 240; BlockX++)
+        {
+            // Before:          After:
+            // (a)              (a)(a)
+            //                  (a)(a)
+
+            uint16_t  _1 = *(BlockSrc);
+
+            // -- Row 1 --
+            *(BlockDst               ) = _1;
+            *(BlockDst            + 1) = _1;
+
+            // -- Row 2 --
+            *(BlockDst + 480 *  1    ) = _1;
+            *(BlockDst + 480 *  1 + 1) = _1;
+
+            BlockSrc += 1;
+            BlockDst += 2;
+        }
+    }
+}
+
+void scaleborder2x_crt(uint32_t* dst, uint32_t* src)
+{
+    uint16_t* Src16 = (uint16_t*) src;
+    uint16_t* Dst16 = (uint16_t*) dst;
+    uint16_t gcolor = hexcolor_to_rgb565(0x000000);
+
+    uint32_t BlockX, BlockY;
+    uint16_t* BlockSrc;
+    uint16_t* BlockDst;
+    for (BlockY = 0; BlockY < 160; BlockY++)
+    {
+        BlockSrc = Src16 + BlockY * 240 * 1;
+        BlockDst = Dst16 + BlockY * 480 * 2;
+        for (BlockX = 0; BlockX < 240; BlockX++)
+        {
+            // Before:          After:
+            // (a)              (1)(1)
+            //                  (2)(2)
+
+            uint16_t  _1 = *(BlockSrc);
+            uint16_t  _2 = Weight2_1( _1, gcolor);
+
+            // -- Row 1 --
+            *(BlockDst               ) = _1;
+            *(BlockDst            + 1) = _1;
+
+            // -- Row 2 --
+            *(BlockDst + 480 *  1    ) = _2;
+            *(BlockDst + 480 *  1 + 1) = _2;
+
+            BlockSrc += 1;
+            BlockDst += 2;
+        }
+    }
+}
+
+#elif VGA_SCREEN
 
 /* Upscales a 160x144 image to 480x432 using a grid-looking upscaler algorithm.
  *
@@ -898,12 +1067,13 @@ void scale3x_dotmatrix(uint32_t* dst, uint32_t* src, const uint32_t gridcolor)
         for (BlockX = 0; BlockX < 160; BlockX++)
         {
             // Before:          After:
-            // (a)              (x)(a)(a)
-            //                  (x)(a)(a)
-            //                  (x)(x)(x)
+            // (a)              (2)(1)(1)
+            //                  (2)(1)(1)
+            //                  (3)(2)(2)
 
             uint16_t  _1 = *(BlockSrc);
             uint16_t  _2 = Weight3_2( _1, gcolor);
+            uint16_t  _3 = Weight2_3( _1, gcolor);
 
             // -- Row 1 --
             *(BlockDst               ) = _2;
@@ -916,7 +1086,7 @@ void scale3x_dotmatrix(uint32_t* dst, uint32_t* src, const uint32_t gridcolor)
             *(BlockDst + 640 *  1 + 2) = _1;
 
             // -- Row 3 --
-            *(BlockDst + 640 *  2    ) = _2;
+            *(BlockDst + 640 *  2    ) = _3;
             *(BlockDst + 640 *  2 + 1) = _2;
             *(BlockDst + 640 *  2 + 2) = _2;
 
@@ -1160,120 +1330,118 @@ void scaleborder15x(uint32_t* dst, uint32_t* src)
     }
 }
 
-void scaleborder166x(uint32_t* dst, uint32_t* src)
-{
-    uint16_t* Src16 = (uint16_t*) src;
-    uint16_t* Dst16 = (uint16_t*) dst;
+void scaleborder166x(uint32_t* dst, uint32_t* src) {
+    uint16_t *Src16 = (uint16_t *) src;
+    uint16_t *Dst16 = (uint16_t *) dst;
 
     uint32_t BlockX, BlockY;
-    uint16_t* BlockSrc;
-    uint16_t* BlockDst;
-    for (BlockY = 0; BlockY < 48; BlockY++)
-    {
+    uint16_t *BlockSrc;
+    uint16_t *BlockDst;
+    for (BlockY = 0; BlockY < 48; BlockY++) {
         BlockSrc = Src16 + BlockY * 192 * 3;
         BlockDst = Dst16 + BlockY * 320 * 5;
-        for (BlockX = 0; BlockX < 64; BlockX++)
-        {   
-            if(BlockX < 8){
+        for (BlockX = 0; BlockX < 64; BlockX++) {
+            if (BlockX < 8) {
                 // -- Row 1 --
-                uint16_t  _1 = *(BlockSrc               );
-                *(BlockDst            + 1) = _1;
-                uint16_t  _2 = *(BlockSrc            + 1);
-                *(BlockDst            + 2) = _2;
-                uint16_t  _3 = *(BlockSrc            + 2);
-                *(BlockDst            + 3) = Weight2_1( _2,  _3);
-                *(BlockDst            + 4) = _3;
-                uint16_t  _A = *(BlockSrc            + 3);
-                *(BlockDst            + 5) = Weight1_2( _3,  _A);
+                uint16_t _1 = *(BlockSrc);
+                *(BlockDst + 1) = _1;
+                uint16_t _2 = *(BlockSrc + 1);
+                *(BlockDst + 2) = _2;
+                uint16_t _3 = *(BlockSrc + 2);
+                *(BlockDst + 3) = Weight2_1(_2, _3);
+                *(BlockDst + 4) = _3;
+                uint16_t _A = *(BlockSrc + 3);
+                *(BlockDst + 5) = Weight1_2(_3, _A);
 
                 // -- Row 2 --
-                uint16_t  _4 = *(BlockSrc + 192 *  1    );
-                *(BlockDst + 320 *  1 + 1) = Weight2_1( _1,  _4);
-                uint16_t  _5 = *(BlockSrc + 192 *  1 + 1);
-                *(BlockDst + 320 *  1 + 2) = Weight2_1( _2,  _5);
-                uint16_t  _6 = *(BlockSrc + 192 *  1 + 2);
-                *(BlockDst + 320 *  1 + 3) = Weight2_1(Weight2_1( _2,  _3), Weight2_1( _5,  _6));
-                *(BlockDst + 320 *  1 + 4) = Weight2_1( _3,  _6);
-                uint16_t  _B = *(BlockSrc + 192 *  1 + 3);
-                *(BlockDst + 320 *  1 + 5) = Weight2_1(Weight1_2( _3,  _A), Weight1_2( _6,  _B));
+                uint16_t _4 = *(BlockSrc + 192 * 1);
+                *(BlockDst + 320 * 1 + 1) = Weight2_1(_1, _4);
+                uint16_t _5 = *(BlockSrc + 192 * 1 + 1);
+                *(BlockDst + 320 * 1 + 2) = Weight2_1(_2, _5);
+                uint16_t _6 = *(BlockSrc + 192 * 1 + 2);
+                *(BlockDst + 320 * 1 + 3) = Weight2_1(Weight2_1(_2, _3), Weight2_1(_5, _6));
+                *(BlockDst + 320 * 1 + 4) = Weight2_1(_3, _6);
+                uint16_t _B = *(BlockSrc + 192 * 1 + 3);
+                *(BlockDst + 320 * 1 + 5) = Weight2_1(Weight1_2(_3, _A), Weight1_2(_6, _B));
 
                 // -- Row 3 --
-                *(BlockDst + 320 *  2 + 1) = _4;
-                *(BlockDst + 320 *  2 + 2) = _5;
-                *(BlockDst + 320 *  2 + 3) = Weight2_1( _5,  _6);
-                *(BlockDst + 320 *  2 + 4) = _6;
-                *(BlockDst + 320 *  2 + 5) = Weight1_2( _6,  _B);
+                *(BlockDst + 320 * 2 + 1) = _4;
+                *(BlockDst + 320 * 2 + 2) = _5;
+                *(BlockDst + 320 * 2 + 3) = Weight2_1(_5, _6);
+                *(BlockDst + 320 * 2 + 4) = _6;
+                *(BlockDst + 320 * 2 + 5) = Weight1_2(_6, _B);
 
                 // -- Row 4 --
-                uint16_t  _7 = *(BlockSrc + 192 *  2    );
-                *(BlockDst + 320 *  3 + 1) = Weight1_2( _4,  _7);
-                uint16_t  _8 = *(BlockSrc + 192 *  2 + 1);
-                *(BlockDst + 320 *  3 + 2) = Weight1_2( _5,  _8);
-                uint16_t  _9 = *(BlockSrc + 192 *  2 + 2);
-                *(BlockDst + 320 *  3 + 3) = Weight1_2(Weight2_1( _5,  _6), Weight2_1( _8,  _9));
-                *(BlockDst + 320 *  3 + 4) = Weight1_2( _6,  _9);
-                uint16_t  _C = *(BlockSrc + 192 *  2 + 3);
-                *(BlockDst + 320 *  3 + 5) = Weight1_2(Weight1_2( _6,  _B), Weight1_2( _9,  _C));
+                uint16_t _7 = *(BlockSrc + 192 * 2);
+                *(BlockDst + 320 * 3 + 1) = Weight1_2(_4, _7);
+                uint16_t _8 = *(BlockSrc + 192 * 2 + 1);
+                *(BlockDst + 320 * 3 + 2) = Weight1_2(_5, _8);
+                uint16_t _9 = *(BlockSrc + 192 * 2 + 2);
+                *(BlockDst + 320 * 3 + 3) = Weight1_2(Weight2_1(_5, _6), Weight2_1(_8, _9));
+                *(BlockDst + 320 * 3 + 4) = Weight1_2(_6, _9);
+                uint16_t _C = *(BlockSrc + 192 * 2 + 3);
+                *(BlockDst + 320 * 3 + 5) = Weight1_2(Weight1_2(_6, _B), Weight1_2(_9, _C));
 
                 // -- Row 5 --
-                *(BlockDst + 320 *  4 + 1) = _7;
-                *(BlockDst + 320 *  4 + 2) = _8;
-                *(BlockDst + 320 *  4 + 3) = Weight2_1( _8,  _9);
-                *(BlockDst + 320 *  4 + 4) = _9;
-                *(BlockDst + 320 *  4 + 5) = Weight1_2( _9,  _C);
-                
-            } else if (BlockX > 55){
+                *(BlockDst + 320 * 4 + 1) = _7;
+                *(BlockDst + 320 * 4 + 2) = _8;
+                *(BlockDst + 320 * 4 + 3) = Weight2_1(_8, _9);
+                *(BlockDst + 320 * 4 + 4) = _9;
+                *(BlockDst + 320 * 4 + 5) = Weight1_2(_9, _C);
+
+            } else if (BlockX > 55) {
                 // -- Row 1 --
-                uint16_t  _1 = *(BlockSrc               );
-                *(BlockDst               ) = _1;
-                uint16_t  _2 = *(BlockSrc            + 1);
-                *(BlockDst            + 1) = Weight1_2( _1,  _2);
-                *(BlockDst            + 2) = _2;
-                uint16_t  _3 = *(BlockSrc            + 2);
-                *(BlockDst            + 3) = _3;
-                uint16_t  _A = *(BlockSrc            + 3);
-                *(BlockDst            + 4) = Weight2_1( _3,  _A);
+                uint16_t _1 = *(BlockSrc);
+                *(BlockDst) = _1;
+                uint16_t _2 = *(BlockSrc + 1);
+                *(BlockDst + 1) = Weight1_2(_1, _2);
+                *(BlockDst + 2) = _2;
+                uint16_t _3 = *(BlockSrc + 2);
+                *(BlockDst + 3) = _3;
+                uint16_t _A = *(BlockSrc + 3);
+                *(BlockDst + 4) = Weight2_1(_3, _A);
 
                 // -- Row 2 --
-                uint16_t  _4 = *(BlockSrc + 192 *  1    );
-                *(BlockDst + 320 *  1    ) = Weight2_1( _1,  _4);
-                uint16_t  _5 = *(BlockSrc + 192 *  1 + 1);
-                *(BlockDst + 320 *  1 + 1) = Weight2_1(Weight1_2( _1,  _2), Weight1_2( _4,  _5));
-                *(BlockDst + 320 *  1 + 2) = Weight2_1( _2,  _5);
-                uint16_t  _6 = *(BlockSrc + 192 *  1 + 2);
-                *(BlockDst + 320 *  1 + 3) = Weight2_1( _3,  _6);
-                uint16_t  _B = *(BlockSrc + 192 *  1 + 3);
-                *(BlockDst + 320 *  1 + 4) = Weight2_1(Weight2_1( _3,  _A), Weight2_1( _6,  _B));
+                uint16_t _4 = *(BlockSrc + 192 * 1);
+                *(BlockDst + 320 * 1) = Weight2_1(_1, _4);
+                uint16_t _5 = *(BlockSrc + 192 * 1 + 1);
+                *(BlockDst + 320 * 1 + 1) = Weight2_1(Weight1_2(_1, _2), Weight1_2(_4, _5));
+                *(BlockDst + 320 * 1 + 2) = Weight2_1(_2, _5);
+                uint16_t _6 = *(BlockSrc + 192 * 1 + 2);
+                *(BlockDst + 320 * 1 + 3) = Weight2_1(_3, _6);
+                uint16_t _B = *(BlockSrc + 192 * 1 + 3);
+                *(BlockDst + 320 * 1 + 4) = Weight2_1(Weight2_1(_3, _A), Weight2_1(_6, _B));
 
                 // -- Row 3 --
-                *(BlockDst + 320 *  2    ) = _4;
-                *(BlockDst + 320 *  2 + 1) = Weight1_2( _4,  _5);
-                *(BlockDst + 320 *  2 + 2) = _5;
-                *(BlockDst + 320 *  2 + 3) = _6;
-                *(BlockDst + 320 *  2 + 4) = Weight2_1( _6,  _B);
+                *(BlockDst + 320 * 2) = _4;
+                *(BlockDst + 320 * 2 + 1) = Weight1_2(_4, _5);
+                *(BlockDst + 320 * 2 + 2) = _5;
+                *(BlockDst + 320 * 2 + 3) = _6;
+                *(BlockDst + 320 * 2 + 4) = Weight2_1(_6, _B);
 
                 // -- Row 4 --
-                uint16_t  _7 = *(BlockSrc + 192 *  2    );
-                *(BlockDst + 320 *  3    ) = Weight1_2( _4,  _7);
-                uint16_t  _8 = *(BlockSrc + 192 *  2 + 1);
-                *(BlockDst + 320 *  3 + 1) = Weight1_2(Weight1_2( _4,  _5), Weight1_2( _7,  _8));
-                *(BlockDst + 320 *  3 + 2) = Weight1_2( _5,  _8);
-                uint16_t  _9 = *(BlockSrc + 192 *  2 + 2);
-                *(BlockDst + 320 *  3 + 3) = Weight1_2( _6,  _9);
-                uint16_t  _C = *(BlockSrc + 192 *  2 + 3);
-                *(BlockDst + 320 *  3 + 4) = Weight1_2(Weight2_1( _6,  _B), Weight2_1( _9,  _C));
+                uint16_t _7 = *(BlockSrc + 192 * 2);
+                *(BlockDst + 320 * 3) = Weight1_2(_4, _7);
+                uint16_t _8 = *(BlockSrc + 192 * 2 + 1);
+                *(BlockDst + 320 * 3 + 1) = Weight1_2(Weight1_2(_4, _5), Weight1_2(_7, _8));
+                *(BlockDst + 320 * 3 + 2) = Weight1_2(_5, _8);
+                uint16_t _9 = *(BlockSrc + 192 * 2 + 2);
+                *(BlockDst + 320 * 3 + 3) = Weight1_2(_6, _9);
+                uint16_t _C = *(BlockSrc + 192 * 2 + 3);
+                *(BlockDst + 320 * 3 + 4) = Weight1_2(Weight2_1(_6, _B), Weight2_1(_9, _C));
 
                 // -- Row 5 --
-                *(BlockDst + 320 *  4    ) = _7;
-                *(BlockDst + 320 *  4 + 1) = Weight1_2( _7,  _8);
-                *(BlockDst + 320 *  4 + 2) = _8;
-                *(BlockDst + 320 *  4 + 3) = _9;
-                *(BlockDst + 320 *  4 + 4) = Weight2_1( _9,  _C);
+                *(BlockDst + 320 * 4) = _7;
+                *(BlockDst + 320 * 4 + 1) = Weight1_2(_7, _8);
+                *(BlockDst + 320 * 4 + 2) = _8;
+                *(BlockDst + 320 * 4 + 3) = _9;
+                *(BlockDst + 320 * 4 + 4) = Weight2_1(_9, _C);
 
-            } 
+            }
 
-            BlockSrc += 3;
-            BlockDst += 5;
+
+        BlockSrc += 3;
+        BlockDst += 5;
         }
     }
 }
